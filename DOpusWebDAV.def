@@ -1,0 +1,23 @@
+LIBRARY DOpusWebDAV
+EXPORTS
+    VFS_Init
+    VFS_Uninit
+    VFS_IdentifyW
+    VFS_GetPrefixListW
+    VFS_GetLastError
+    VFS_Create
+    VFS_Destroy
+    VFS_ReadDirectoryW
+    VFS_CreateFileW
+    VFS_ReadFile
+    VFS_WriteFile
+    VFS_CloseFile
+    VFS_DeleteFileW
+    VFS_CreateDirectoryW
+    VFS_RenameFileW
+    VFS_MoveFileW
+    VFS_GetPathDisplayNameW
+    VFS_GetPathParentRootW
+    VFS_PropGetW
+    VFS_GetFileInformationW
+    VFS_GetFileSizeW
