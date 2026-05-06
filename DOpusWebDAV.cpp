@@ -273,3 +273,16 @@ extern "C" __declspec(dllexport) BOOL VFS_RemoveDirectoryW(HANDLE hData, LPVFSFU
     SetLastError(ERROR_ACCESS_DENIED); 
     return FALSE;
 }
+
+extern "C" __declspec(dllexport) BOOL VFS_QueryPathW(LPWSTR lpszPath, BOOL fPrefix, LPGUID pGUID) {
+    if (!lpszPath) return FALSE;
+    if (fPrefix) {
+        if (_wcsnicmp(lpszPath, L"dav://", 6) == 0 || _wcsnicmp(lpszPath, L"davs://", 7) == 0) {
+            if (pGUID) {
+                *pGUID = GUIDPlugin_WebDAV;
+            }
+            return TRUE;
+        }
+    }
+    return FALSE;
+}
