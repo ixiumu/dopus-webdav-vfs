@@ -14,6 +14,7 @@ EXPORTS
     VFS_CloseFile
     VFS_DeleteFileW
     VFS_CreateDirectoryW
+    VFS_RemoveDirectoryW
     VFS_RenameFileW
     VFS_MoveFileW
     VFS_GetPathDisplayNameW

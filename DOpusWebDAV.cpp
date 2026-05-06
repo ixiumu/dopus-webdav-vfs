@@ -219,17 +219,26 @@ extern "C" __declspec(dllexport) BOOL VFS_GetPathParentRootW(HANDLE hData, LPWST
     if (!lpszPath || !lpszNewPath) return FALSE;
     if (fRoot) { StringCchCopyW(lpszNewPath, cbNewPathMax, _wcsnicmp(lpszPath, L"davs://", 7) == 0 ? L"davs://" : L"dav://"); return TRUE; }
     if (_wcsicmp(lpszPath, L"dav://") == 0 || _wcsicmp(lpszPath, L"davs://") == 0) return FALSE;
-    WebDAVUrl urlInfo; if (!WebDAVClient::ParseUrl(lpszPath, urlInfo)) return FALSE;
-    if (urlInfo.path.empty() || urlInfo.path == L"/") { StringCchPrintfW(lpszNewPath, cbNewPathMax, L"%s://", urlInfo.scheme.c_str()); return TRUE; }
+    WebDAVUrl urlInfo; 
+    if (!WebDAVClient::ParseUrl(lpszPath, urlInfo)) return FALSE;
+    std::wstring portStr = (urlInfo.port != 80 && urlInfo.port != 443) ? (L":" + std::to_wstring(urlInfo.port)) : L"";
+    if (urlInfo.path.empty() || urlInfo.path == L"/") { 
+        StringCchPrintfW(lpszNewPath, cbNewPathMax, L"%s://", urlInfo.scheme.c_str()); 
+        return TRUE; 
+    }
     std::wstring path = urlInfo.path;
     if (!path.empty() && path.back() == L'/') path.pop_back();
     size_t lastSlash = path.find_last_of(L'/');
     if (lastSlash != std::wstring::npos) {
         std::wstring parentPath = path.substr(0, lastSlash + 1);
-        if (parentPath == L"/") { StringCchPrintfW(lpszNewPath, cbNewPathMax, L"%s://%s%s", urlInfo.scheme.c_str(), urlInfo.host.c_str(), (urlInfo.port != 80 && urlInfo.port != 443) ? (L":" + std::to_wstring(urlInfo.port)).c_str() : L""); } 
-        else { StringCchPrintfW(lpszNewPath, cbNewPathMax, L"%s://%s%s%s", urlInfo.scheme.c_str(), urlInfo.host.c_str(), (urlInfo.port != 80 && urlInfo.port != 443) ? (L":" + std::to_wstring(urlInfo.port)).c_str() : L"", parentPath.c_str()); }
+        if (parentPath == L"/") { 
+            StringCchPrintfW(lpszNewPath, cbNewPathMax, L"%s://%s%s", urlInfo.scheme.c_str(), urlInfo.host.c_str(), portStr.c_str()); 
+        } else { 
+            StringCchPrintfW(lpszNewPath, cbNewPathMax, L"%s://%s%s%s", urlInfo.scheme.c_str(), urlInfo.host.c_str(), portStr.c_str(), parentPath.c_str()); 
+        }
         return TRUE;
-    } return FALSE;
+    } 
+    return FALSE;
 }
 
 extern "C" __declspec(dllexport) BOOL VFS_PropGetW(HANDLE hData, vfsProperty propId, LPVOID lpPropData, LPVOID lpData1, LPVOID lpData2, LPVOID lpData3) {
@@ -254,4 +263,13 @@ extern "C" __declspec(dllexport) BOOL VFS_GetFileSizeW(HANDLE hVFSData, LPVFSFUN
             if (WebDAVClient::Stat(urlInfo, info)) { if (piFileSize) *piFileSize = info.size; return TRUE; }
         }
     } return FALSE;
+}
+
+extern "C" __declspec(dllexport) BOOL VFS_RemoveDirectoryW(HANDLE hData, LPVFSFUNCDATA lpFuncData, LPWSTR lpszPath) {
+    WebDAVUrl urlInfo;
+    if (!WebDAVClient::ParseUrl(lpszPath, urlInfo)) return FALSE;
+    WebDAVClient::PrepareAuth(NULL, urlInfo);
+    if (WebDAVClient::Delete(urlInfo)) return TRUE;
+    SetLastError(ERROR_ACCESS_DENIED); 
+    return FALSE;
 }
