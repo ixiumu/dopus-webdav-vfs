@@ -20,7 +20,7 @@ extern "C" __declspec(dllexport) void VFS_Destroy(HANDLE hVFSData) {}
 extern "C" __declspec(dllexport) BOOL VFS_IdentifyW(LPVFSPLUGININFOW lpVFSInfo) {
     lpVFSInfo->idPlugin = GUIDPlugin_WebDAV;
     lpVFSInfo->dwFlags = VFSF_CANCONFIGURE | VFSF_MULTIPLEFORMATS;
-    lpVFSInfo->dwCapabilities = VFSCAPABILITY_CASESENSITIVE | VFSCAPABILITY_MOVEBYRENAME | VFSCAPABILITY_CANRESUMECOPIES;
+    lpVFSInfo->dwCapabilities = VFSCAPABILITY_CASESENSITIVE | VFSCAPABILITY_MOVEBYRENAME | VFSCAPABILITY_CANRESUMECOPIES | VFSCAPABILITY_LETMEDOPARENTS;
     lpVFSInfo->dwOpusVerMajor = 9;
     lpVFSInfo->dwOpusVerMinor = 0;
     if (lpVFSInfo->lpszHandlePrefix) StringCchCopyW(lpVFSInfo->lpszHandlePrefix, lpVFSInfo->cchHandlePrefixMax, L"davs://");
@@ -40,7 +40,12 @@ extern "C" __declspec(dllexport) BOOL VFS_ReadDirectoryW(HANDLE hData, LPVFSFUNC
     if (!lpRDD) return FALSE;
     if (lpRDD->vfsReadOp == VFSREAD_FREEDIRCLOSE || lpRDD->vfsReadOp == VFSREAD_FREEDIR || lpRDD->vfsReadOp == VFSREAD_CHANGEDIR) return TRUE;
 
-    if (lpRDD->vfsReadOp == VFSREAD_NORMAL || lpRDD->vfsReadOp == VFSREAD_REFRESH) {
+    if (lpRDD->vfsReadOp == VFSREAD_NORMAL  || 
+        lpRDD->vfsReadOp == VFSREAD_REFRESH ||
+        lpRDD->vfsReadOp == VFSREAD_PARENT  ||
+        lpRDD->vfsReadOp == VFSREAD_ROOT    ||
+        lpRDD->vfsReadOp == VFSREAD_BACK    ||
+        lpRDD->vfsReadOp == VFSREAD_FORWARD) {
         if (_wcsicmp(lpRDD->lpszPath, L"dav://") == 0 || _wcsicmp(lpRDD->lpszPath, L"davs://") == 0) {
             LPVFSFILEDATAHEADER lpFDH = (LPVFSFILEDATAHEADER)HeapAlloc(lpRDD->hMemHeap, HEAP_ZERO_MEMORY, sizeof(VFSFILEDATAHEADER));
             if (lpFDH) {
@@ -202,42 +207,65 @@ extern "C" __declspec(dllexport) long VFS_GetLastError(HANDLE hData) { return Ge
 
 extern "C" __declspec(dllexport) BOOL VFS_GetPathDisplayNameW(HANDLE hData, LPWSTR lpszPath, LPWSTR lpszDisplayName, int cbDisplayNameMax) {
     if (!lpszPath || !lpszDisplayName) return FALSE;
-    if (_wcsicmp(lpszPath, L"dav://") == 0 || _wcsicmp(lpszPath, L"davs://") == 0) { StringCchCopyW(lpszDisplayName, cbDisplayNameMax, L"DAV"); return TRUE; }
-    WebDAVUrl urlInfo; if (!WebDAVClient::ParseUrl(lpszPath, urlInfo)) return FALSE;
-    if (urlInfo.path == L"/" || urlInfo.path.empty()) {
-        std::wstring hostDisp = urlInfo.host;
-        if (urlInfo.port != 80 && urlInfo.port != 443) hostDisp += L":" + std::to_wstring(urlInfo.port);
-        StringCchCopyW(lpszDisplayName, cbDisplayNameMax, hostDisp.c_str()); return TRUE;
+    if (_wcsicmp(lpszPath, L"dav://") == 0 || _wcsicmp(lpszPath, L"davs://") == 0) {
+        StringCchCopyW(lpszDisplayName, cbDisplayNameMax, L"DAV");
+        return TRUE;
     }
-    std::wstring path = urlInfo.path;
-    if (!path.empty() && path.back() == L'/') path.pop_back();
-    size_t lastSlash = path.find_last_of(L'/');
-    if (lastSlash != std::wstring::npos) { StringCchCopyW(lpszDisplayName, cbDisplayNameMax, WebDAVClient::Utf8ToWide(WebDAVClient::UrlDecode(WebDAVClient::WideToUtf8(path.substr(lastSlash + 1)))).c_str()); return TRUE; } return FALSE;
+    std::wstring path(lpszPath);
+    size_t schemeEnd = path.find(L"://");
+    if (schemeEnd == std::wstring::npos) return FALSE;
+    size_t authStart = schemeEnd + 3;
+    size_t authEnd = path.find(L'/', authStart);
+    std::wstring hostPort;
+    std::wstring remainder;
+    if (authEnd != std::wstring::npos) {
+        hostPort = path.substr(authStart, authEnd - authStart);
+        remainder = path.substr(authEnd);
+    } else {
+        hostPort = path.substr(authStart);
+    }
+    size_t atPos = hostPort.find_last_of(L'@');
+    if (atPos != std::wstring::npos) {
+        hostPort = hostPort.substr(atPos + 1);
+    }
+    size_t colonPos = hostPort.find_last_of(L':');
+    size_t bracketPos = hostPort.find_last_of(L']'); 
+    if (colonPos != std::wstring::npos && (bracketPos == std::wstring::npos || colonPos > bracketPos)) {
+        hostPort = hostPort.substr(0, colonPos);
+    }
+    std::wstring prettyPath = path.substr(0, schemeEnd + 3) + hostPort;
+    if (!remainder.empty()) {
+        prettyPath += WebDAVClient::Utf8ToWide(WebDAVClient::UrlDecode(WebDAVClient::WideToUtf8(remainder)));
+    }
+    StringCchCopyW(lpszDisplayName, cbDisplayNameMax, prettyPath.c_str());
+    return TRUE;
 }
 
 extern "C" __declspec(dllexport) BOOL VFS_GetPathParentRootW(HANDLE hData, LPWSTR lpszPath, BOOL fRoot, LPWSTR lpszNewPath, int cbNewPathMax) {
     if (!lpszPath || !lpszNewPath) return FALSE;
-    if (fRoot) { StringCchCopyW(lpszNewPath, cbNewPathMax, _wcsnicmp(lpszPath, L"davs://", 7) == 0 ? L"davs://" : L"dav://"); return TRUE; }
-    if (_wcsicmp(lpszPath, L"dav://") == 0 || _wcsicmp(lpszPath, L"davs://") == 0) return FALSE;
-    WebDAVUrl urlInfo; 
-    if (!WebDAVClient::ParseUrl(lpszPath, urlInfo)) return FALSE;
-    std::wstring portStr = (urlInfo.port != 80 && urlInfo.port != 443) ? (L":" + std::to_wstring(urlInfo.port)) : L"";
-    if (urlInfo.path.empty() || urlInfo.path == L"/") { 
-        StringCchPrintfW(lpszNewPath, cbNewPathMax, L"%s://", urlInfo.scheme.c_str()); 
-        return TRUE; 
+    if (fRoot) {
+        StringCchCopyW(lpszNewPath, cbNewPathMax, _wcsnicmp(lpszPath, L"davs://", 7) == 0 ? L"davs://" : L"dav://");
+        return TRUE;
     }
-    std::wstring path = urlInfo.path;
-    if (!path.empty() && path.back() == L'/') path.pop_back();
+    if (_wcsicmp(lpszPath, L"dav://") == 0 || _wcsicmp(lpszPath, L"davs://") == 0) return FALSE;
+    std::wstring path(lpszPath);
+    if (path.back() == L'/') {
+        path.pop_back();
+    }
+    size_t schemeEnd = path.find(L"://");
+    if (schemeEnd == std::wstring::npos) return FALSE;
+    size_t authStart = schemeEnd + 3;
+    size_t firstSlash = path.find(L'/', authStart);
+    if (firstSlash == std::wstring::npos) {
+        StringCchCopyW(lpszNewPath, cbNewPathMax, _wcsnicmp(lpszPath, L"davs://", 7) == 0 ? L"davs://" : L"dav://");
+        return TRUE;
+    }
     size_t lastSlash = path.find_last_of(L'/');
     if (lastSlash != std::wstring::npos) {
-        std::wstring parentPath = path.substr(0, lastSlash + 1);
-        if (parentPath == L"/") { 
-            StringCchPrintfW(lpszNewPath, cbNewPathMax, L"%s://%s%s", urlInfo.scheme.c_str(), urlInfo.host.c_str(), portStr.c_str()); 
-        } else { 
-            StringCchPrintfW(lpszNewPath, cbNewPathMax, L"%s://%s%s%s", urlInfo.scheme.c_str(), urlInfo.host.c_str(), portStr.c_str(), parentPath.c_str()); 
-        }
+        std::wstring parentPath = path.substr(0, lastSlash);
+        StringCchCopyW(lpszNewPath, cbNewPathMax, parentPath.c_str());
         return TRUE;
-    } 
+    }
     return FALSE;
 }
 
