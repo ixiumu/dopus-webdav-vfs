@@ -291,34 +291,46 @@ bool WebDAVClient::Stat(const WebDAVUrl& urlInfo, WebDAVFileInfo& outInfo) {
         headers += L"Content-Type: text/xml; charset=\"utf-8\"\r\n";
 
         std::string reqBody = "<?xml version=\"1.0\" encoding=\"utf-8\"?><D:propfind xmlns:D=\"DAV:\"><D:prop><D:getlastmodified/><D:getcontentlength/><D:resourcetype/></D:prop></D:propfind>";
+        
         if (WinHttpSendRequest(hRequest, headers.c_str(), (DWORD)-1, (LPVOID)reqBody.c_str(), (DWORD)reqBody.length(), (DWORD)reqBody.length(), 0)) {
             if (WinHttpReceiveResponse(hRequest, NULL)) {
-                std::string xmlResponse; DWORD dwSize = 0, dwDownloaded = 0;
-                do {
-                    if (!WinHttpQueryDataAvailable(hRequest, &dwSize) || dwSize == 0) break;
-                    std::vector<char> buffer(dwSize + 1, 0);
-                    if (!WinHttpReadData(hRequest, buffer.data(), dwSize, &dwDownloaded)) break;
-                    xmlResponse.append(buffer.data(), dwDownloaded);
-                } while (dwSize > 0);
+                DWORD statusCode = 0; 
+                DWORD statusCodeSize = sizeof(statusCode);
+                WinHttpQueryHeaders(hRequest, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_HEADER_NAME_BY_INDEX, &statusCode, &statusCodeSize, WINHTTP_NO_HEADER_INDEX);
+                if (statusCode >= 200 && statusCode < 300) {
+                    std::string xmlResponse; DWORD dwSize = 0, dwDownloaded = 0;
+                    do {
+                        if (!WinHttpQueryDataAvailable(hRequest, &dwSize) || dwSize == 0) break;
+                        std::vector<char> buffer(dwSize + 1, 0);
+                        if (!WinHttpReadData(hRequest, buffer.data(), dwSize, &dwDownloaded)) break;
+                        xmlResponse.append(buffer.data(), dwDownloaded);
+                    } while (dwSize > 0);
 
-                pugi::xml_document doc;
-                if (doc.load_string(xmlResponse.c_str())) {
-                    auto get_child = [](pugi::xml_node node, const char* name) -> pugi::xml_node {
-                        for (pugi::xml_node child = node.first_child(); child; child = child.next_sibling()) {
-                            std::string n = child.name(); size_t pos = n.find(':');
-                            if ((pos != std::string::npos ? n.substr(pos + 1) : n) == name) return child;
-                        } return pugi::xml_node();
-                    };
-                    pugi::xml_node prop = get_child(get_child(get_child(get_child(doc, "multistatus"), "response"), "propstat"), "prop");
-                    if (prop) {
-                        outInfo.isDir = !get_child(get_child(prop, "resourcetype"), "collection").empty();
-                        std::string lenStr = get_child(prop, "getcontentlength") ? get_child(prop, "getcontentlength").text().get() : "";
-                        try { outInfo.size = lenStr.empty() ? 0 : std::stoull(lenStr); } catch (...) { outInfo.size = 0; }
-                        outInfo.lastModified = ParseHttpTime(get_child(prop, "getlastmodified") ? get_child(prop, "getlastmodified").text().get() : "");
-                        success = true;
-                        
-                        std::lock_guard<std::mutex> lock(s_statCacheMutex);
-                        s_statCache[cacheKey] = { outInfo, GetTickCount64() };
+                    pugi::xml_document doc;
+                    if (doc.load_string(xmlResponse.c_str())) {
+                        auto get_child = [](pugi::xml_node node, const char* name) -> pugi::xml_node {
+                            for (pugi::xml_node child = node.first_child(); child; child = child.next_sibling()) {
+                                std::string n = child.name(); size_t pos = n.find(':');
+                                if ((pos != std::string::npos ? n.substr(pos + 1) : n) == name) return child;
+                            } return pugi::xml_node();
+                        };
+                        pugi::xml_node prop = get_child(get_child(get_child(get_child(doc, "multistatus"), "response"), "propstat"), "prop");
+                        if (prop) {
+                            outInfo.isDir = !get_child(get_child(prop, "resourcetype"), "collection").empty();
+                            std::string lenStr = get_child(prop, "getcontentlength") ? get_child(prop, "getcontentlength").text().get() : "";
+                            try { outInfo.size = lenStr.empty() ? 0 : std::stoull(lenStr); } catch (...) { outInfo.size = 0; }
+                            outInfo.lastModified = ParseHttpTime(get_child(prop, "getlastmodified") ? get_child(prop, "getlastmodified").text().get() : "");
+                            success = true;
+                            
+                            std::lock_guard<std::mutex> lock(s_statCacheMutex);
+                            s_statCache[cacheKey] = { outInfo, GetTickCount64() };
+                        }
+                    }
+                } else {
+                    if (statusCode == 401 || statusCode == 403) {
+                        SetLastError(ERROR_ACCESS_DENIED);
+                    } else {
+                        SetLastError(ERROR_PATH_NOT_FOUND);
                     }
                 }
             }
@@ -360,8 +372,22 @@ FILETIME WebDAVClient::ParseHttpTime(const std::string& timeStr) {
 
 void WebDAVClient::InvalidateCache(const WebDAVUrl& urlInfo) {
     std::wstring cacheKey = GetCacheKey(urlInfo);
+    std::wstring p = urlInfo.path;
+    if (p.length() > 1 && p.back() == L'/') p.pop_back();
+    size_t slashPos = p.find_last_of(L'/');
+    std::wstring parentCacheKey;
+    if (slashPos != std::wstring::npos) {
+        std::wstring parentPath = p.substr(0, slashPos);
+        if (parentPath.empty()) parentPath = L"/";
+        WebDAVUrl parentUrl = urlInfo;
+        parentUrl.path = parentPath;
+        parentCacheKey = GetCacheKey(parentUrl);
+    }
     std::lock_guard<std::mutex> lock(s_statCacheMutex);
     s_statCache.erase(cacheKey);
+    if (!parentCacheKey.empty()) {
+        s_statCache.erase(parentCacheKey);
+    }
 }
 
 static bool SendSimpleRequest(const WebDAVUrl& urlInfo, const std::wstring& method) {
@@ -427,7 +453,7 @@ bool WebDAVClient::Move(const WebDAVUrl& srcUrl, const WebDAVUrl& destUrl) {
 }
 
 WebDAVClient::FileStreamContext* WebDAVClient::BeginDownload(const WebDAVUrl& urlInfo) {
-    FileStreamContext* ctx = new FileStreamContext{false, NULL, NULL, 0};
+    FileStreamContext* ctx = new FileStreamContext{false, NULL, NULL, 0, urlInfo};
     ctx->hConnect = WinHttpConnect(s_hGlobalSession, urlInfo.host.c_str(), urlInfo.port, 0);
     if (!ctx->hConnect) { delete ctx; return NULL; }
     
@@ -456,7 +482,7 @@ WebDAVClient::FileStreamContext* WebDAVClient::BeginDownload(const WebDAVUrl& ur
 }
 
 WebDAVClient::FileStreamContext* WebDAVClient::BeginUpload(const WebDAVUrl& urlInfo) {
-    FileStreamContext* ctx = new FileStreamContext{true, NULL, NULL, 0};
+    FileStreamContext* ctx = new FileStreamContext{true, NULL, NULL, 0, urlInfo};
     ctx->hConnect = WinHttpConnect(s_hGlobalSession, urlInfo.host.c_str(), urlInfo.port, 0);
     if (!ctx->hConnect) { delete ctx; return NULL; }
     

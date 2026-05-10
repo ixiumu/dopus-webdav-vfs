@@ -42,6 +42,7 @@ public:
         HINTERNET hConnect;
         HINTERNET hRequest;
         uint64_t fileSize;
+        WebDAVUrl urlInfo;
     };
 
     static std::vector<WebDAVFileInfo> ListDirectory(const WebDAVUrl& urlInfo);

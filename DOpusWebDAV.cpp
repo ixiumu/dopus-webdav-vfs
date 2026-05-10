@@ -171,13 +171,20 @@ extern "C" __declspec(dllexport) void VFS_CloseFile(HANDLE hVFSData, LPVFSFUNCDA
     if (!ctx) return;
     if (ctx->isWrite && ctx->hRequest) {
         DWORD bw; WinHttpWriteData(ctx->hRequest, "0\r\n\r\n", 5, &bw);
+        
         if (WinHttpReceiveResponse(ctx->hRequest, NULL)) {
+            DWORD statusCode = 0; DWORD sz = sizeof(statusCode);
+            WinHttpQueryHeaders(ctx->hRequest, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_HEADER_NAME_BY_INDEX, &statusCode, &sz, WINHTTP_NO_HEADER_INDEX);
+            
             DWORD dwSize = 0, dwDownloaded = 0; char discardBuf[1024];
             do {
                 if (!WinHttpQueryDataAvailable(ctx->hRequest, &dwSize) || dwSize == 0) break;
                 if (dwSize > sizeof(discardBuf)) dwSize = sizeof(discardBuf);
                 if (!WinHttpReadData(ctx->hRequest, discardBuf, dwSize, &dwDownloaded)) break;
             } while (dwSize > 0);
+            if (statusCode >= 200 && statusCode < 300) {
+                WebDAVClient::InvalidateCache(ctx->urlInfo);
+            }
         }
     }
     if (ctx->hRequest) WinHttpCloseHandle(ctx->hRequest);
@@ -306,9 +313,7 @@ extern "C" __declspec(dllexport) BOOL VFS_QueryPathW(LPWSTR lpszPath, BOOL fPref
     if (!lpszPath) return FALSE;
     if (fPrefix) {
         if (_wcsnicmp(lpszPath, L"dav://", 6) == 0 || _wcsnicmp(lpszPath, L"davs://", 7) == 0) {
-            if (pGUID) {
-                *pGUID = GUIDPlugin_WebDAV;
-            }
+            if (pGUID) { *pGUID = GUIDPlugin_WebDAV; }
             return TRUE;
         }
     }
